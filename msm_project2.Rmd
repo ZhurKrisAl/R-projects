@@ -1,0 +1,951 @@
+---
+title: "ПРОЕКТ"
+output: html_document
+date: "2024-03-24"
+---
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(knitr)
+library(kableExtra)
+library(magrittr)
+library(openxlsx)
+library(DescTools)
+library(EnvStats)
+library(outliers)
+library(psych)
+library(ggplot2)
+library(pander)
+library(GGally)
+library(ggpubr)
+library(corrplot)
+library(readr)
+library(DiscriMiner)
+library(ppcor)
+library(robustHD)
+library(caret)
+library(FactoMineR)
+library(lmtest)
+library(factoextra)
+library(devtools)
+library(rio)
+library(REdaS)
+library(leaps)
+library(questionr)
+library(sjPlot)
+library(dplyr)
+library(tseries)
+```
+
+1.  **Постановка задачи**
+
+Выгружаем данные и удаляем признак `Density`, так как зависимая переменная `BodyFat` входит
+в формулу определения плотности тела и получается, что результаты будут
+ненадёжными, если не уберём её из исследования. Очищаем их от пропущенных значений и предварительно просматриваем их:
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+df <- read.csv('bodyfat.csv')
+df <- na.omit(df)
+df <- df[-c(df$Density)]
+str(df)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+desc <- read.xlsx('bodyfat.xlsx', sheet = 'Description of data')
+kbl(desc, caption = "Таблица 1. Описание данных", booktabs = T, 
+    col.names = c("Переменная", "Описание переменной, англ", "Описание переменной, рус")) %>% 
+  kable_classic_2(html_font = "Cambria", font_size = 10, full_width = F) %>%
+  pack_rows("Зависимая переменная", 1, 1) %>%
+  pack_rows("Объясняющие переменные", 2, 15)
+```
+
+*Обоснование репрезентативности выборки:*
+
+\- 252 различных измерений окружности тела мужчин;
+
+\- 15 непрерывных объясняющих переменных.
+
+*Гипотезы исследования:*
+
+1)  гипотеза о зависимости уровня жира в организме от различных физических показателей тела;
+
+2)  гипотеза о наличии аномальных наблюдений в выборке;
+
+3)  гипотеза о нормальном распределении совокупности.
+
+```{=html}
+<!-- -->
+```
+2.  **Основные характеристики СВ**
+
+*Характеристики центра:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+mean <- mean(df$BodyFat)
+median <- median(df$BodyFat)
+mode <- Mode(df$BodyFat)
+
+paste('Среднее: ', mean)
+paste('Медиана: Me = ', median)
+paste('Мода: Mo = ', mode) 
+```
+
+Видим, что среднее, медиана и мода примерно равны, следовательно, предполагаем наличие нормального распределения исследуемой переменной `BodyFat`.
+
+*Характеристики разброса:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+paste('min = ', range(df$BodyFat)[1])
+paste('max = ', range(df$BodyFat)[2])
+paste('Размах: R = max - min = ', round(range(df$BodyFat)[2] - range(df$BodyFat)[1], 3))
+paste('Дисперсия: Var(HI) = ', round(var(df$BodyFat), 3))
+sd <- sd(df$BodyFat)
+paste('Стандартное отклонение: sd(HI) = ', round(sd, 3))
+paste('Коэффициент вариации: CV = ', round(CoefVar(df$BodyFat)*100, 3), '%')
+```
+
+Коэффициент вариации выше $33$% означает, что переменная `BodyFat` неоднородна.
+
+*Ранговые характеристики:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+pander(quantile(df$BodyFat))
+pander(quantile(df$BodyFat, probs = seq(.0, 1, by = .1)))
+```
+
+По данным о квартилях, мы знаем, что что 25% наблюдений имеют значение, меньшее или равное 12,47, 50% наблюдений имеют значение, меньшее или равное 19,2, 75% значений не превышают 25,3.
+
+3.  **Диагностика выбросов**
+
+*Ищем интерквартильный размах:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+IQR <- IQR(df$BodyFat)
+paste('Интерквартильный размах:', IQR)
+```
+
+*Правило 1,5IQR:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+boxplot(df$BodyFat, ylab = 'Показатель жировой массы тела')
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+out_of_1.5IQR <- boxplot.stats(df$BodyFat)$out
+out_of_1.5IQR
+```
+
+Обнаружен один выброс - 47,5.
+
+*Правило 3IQR:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+Q1 <- quantile(df$BodyFat, 0.25) 
+Q3 <- quantile(df$BodyFat, 0.75)
+
+upper_limit_3iqr <- Q3 + 3 * IQR
+lower_limit_3iqr <- Q1 - 3 * IQR
+
+outliers_3iqr <- df$BodyFat[df$BodyFat > upper_limit_3iqr | df$BodyFat < lower_limit_3iqr]
+
+outliers_3iqr
+```
+
+Выбросы не обнаружены.
+
+*Правило 3 сигм:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+Q1 <- quantile(df$BodyFat, 0.25) 
+Q3 <- quantile(df$BodyFat, 0.75)
+
+upper_limit_3sd <- mean + 3 * sd
+lower_limit_3sd <- mean - 3 * sd
+
+outliers_3sd <- df$BodyFat[df$BodyFat > upper_limit_3sd | df$BodyFat < lower_limit_3sd]
+
+outliers_3sd
+```
+
+Обнаружен один выброс - 47,5.
+
+*Тест Граббса:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+grubbs.test(df$BodyFat)
+grubbs.test(df$BodyFat, opposite = TRUE)
+```
+
+Тест Граббса для максимального значения: 'p-value' \> 0,05, гипотеза не отвергается, следовательно, значение 47.5 не является выбросом согласно тесту Граббса; Тест Граббса для минимального значения: 'p-value' \> 0,05, гипотеза не отвергается, следовательно, значение 0 не является выбросом согласно тесту Граббса.
+
+*Тест Рознера:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+k = length(out_of_1.5IQR)
+pander(rosnerTest(df$BodyFat, k = k)$all.stats)
+```
+
+На тесте Рознера проверили значение, являющееся выбросом по правилу 1,5IQR. Выявили, что оно не является выбросом согласно результату тесту Рознера.
+
+4.  **Проверка соответствия эмпирического распределения нормальному закону**
+
+*Характеристики формы:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+paste('Коэффициент асимметрии: As = ', round(Skew(df$BodyFat), 3))
+paste('Коэффициент эксцесса: Ek = ', round(Kurt(df$BodyFat), 3))
+```
+
+Коэффициент асимметрии больше 0 и меньше 0.5 по модулю, следовательно, распределение исследуемой переменной имеет слабую правостороннюю асимметрию. Коэффициент эксцесса меньше 0 и по модулю меньше 0.5, значит, распределение переменной `BodyFat` имеет незначительное плосковершинное распределение.
+
+*Гистограмма распределения переменной `BodyFat`:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(df, aes(x = df$BodyFat)) + 
+  geom_histogram(color = "black", fill = "orange") + 
+  ylab("Относительная частота") +
+  xlab("Уровень жира в организме")
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(df, aes(x = df$BodyFat)) + 
+  geom_dotplot(color = "black", fill = "orange") + 
+  ylab("Относительная частота") +
+  xlab("Уровень жира в организме")
+```
+
+По графикам наблюдаем, что крайнее значение с правой стороны далеко отданных, поэтому предлагаем посмотреть на графики без данного выброса.
+
+*Графики после удаления выбросов:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+Q1 <- quantile(df$BodyFat, 0.25)
+Q3 <- quantile(df$BodyFat, 0.75)
+IQR <- Q3 - Q1
+
+lower_bound <- Q1 - 1.5 * IQR
+upper_bound <- Q3 + 1.5 * IQR
+
+df_no <- df[df$BodyFat >= lower_bound & df$BodyFat <= upper_bound,]
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(df_no, aes(x = df_no$BodyFat)) + 
+  geom_histogram(color = "black", fill = "orange") + 
+  ylab("Относительная частота") +
+  xlab("Уровень жира в организме")
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggplot(df_no, aes(x = df_no$BodyFat)) + 
+  geom_dotplot(color = "black", fill = "orange") + 
+  ylab("Относительная частота") +
+  xlab("Уровень жира в организме")
+```
+
+Видим, что распределение исследуемой переменной близко к форме колокола Гаусса, значит, мы снова можем выдвинуть предположение о подчинении распределения переменной нормальному закону.
+
+**4.1. Проверка гипотезы о нормальном распределении совокупности с использованием статистического критерия**
+
+*Критерий согласия Пирсона:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+pander(PearsonTest(df$BodyFat))
+```
+
+*Критерий Шапиро-Уилка:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+pander(shapiro.test(df$BodyFat))
+```
+
+*Тест Колмогорова-Смирнова:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+pander(ks.test(df$BodyFat, 'pnorm', mean(df$BodyFat), sd(df$BodyFat)))
+```
+
+P-value больше уровня значимости 5%, значит, гипотеза о нормальном распределении исследуемой переменной не отвергается. Мы подтвердили гипотезу о том, что переменная `BodyFat` подвергается нормальному распределению.
+
+5.  **Корреляционный анализ**
+
+5.1. **Построение облака (поля) корреляции**
+
+Рассмотрим *частичные корреляционные матрицы* в удобном виде, где на верхней панели отображается парная корреляция между двумя показателями, на нижней - точечные графики составленные по выборке, а по диагонали - полученные графики плотности.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggpairs(df[,1:8])
+```
+
+*Общий вид:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggpairs(df[,1:14])
+```
+
+Заметим, что переменная `BodyFat` имеет сильную прямую связь с переменной `Abdomen`, сильную обратную связь (близкую к 1) с переменной `Density`, а также практически не имеет связи (имеет очень слабую связь близкую к 0) с переменной `Height`.
+
+Далее подробно рассмотрим эти три вида связи.
+
+1.1. Рассмотрим *обратную зависимость переменных `Density`и `BodyFat`* до и после удаления выбросов:
+
+*До удаления выбросов:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggscatter(df, x = "BodyFat", y = "Density", 
+          xlab = "BodyFat", ylab = "Density")
+```
+
+*Определим выбросы:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+boxplot.stats(df$BodyFat)$out
+boxplot.stats(df$Density)$out
+max(df$BodyFat)
+```
+
+Имеется один выброс - это максимальное значение `BodyFat` в выборке. Поэтому сортируем массив данных и удаляем выброс.
+
+*После удаления выбросов:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+df1 <- df[-which(df$BodyFat %in% sort(df$BodyFat)[(nrow(df) - 1):nrow(df)]),]
+
+ggscatter(df1, x = "BodyFat", y = "Density", 
+          xlab = "BodyFat", ylab = "Density")
+```
+
+Заметим, что удаление выброса не сильно повлияло на облако корреляции, немного изменился вид графика лишь из-за незначительного изменения масштаба рисунка.
+
+1.2. Рассмотрим *положительную зависимость переменных `Abdomen`и `BodyFat`*до и после удаления выбросов:
+
+*До удаления выбросов:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggscatter(df, x = "BodyFat", y = "Abdomen", 
+          xlab = "BodyFat", ylab = "Abdomen")
+```
+
+*Определим выбросы:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+boxplot.stats(df$BodyFat)$out
+boxplot.stats(df$Abdomen)$out
+```
+
+Имеется три выброса, поэтому далее сортируем массив данных и удаляем выбросы.
+
+*После удаления выбросов:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+df2 <- df[-which(df$Abdomen %in% sort(df$Abdomen)[(nrow(df) - 3):nrow(df)]),]
+
+ggscatter(df2, x = "BodyFat", y = "Abdomen", 
+          xlab = "BodyFat", ylab = "Abdomen")
+```
+
+Заметим, что удаление выбросов не сильно повлияло на облако корреляции, немного изменился вид графика лишь из-за незначительного изменения масштаба рисунка.
+
+1.3. Рассмотрим *отсутствие зависимости переменных `Height` и `BodyFat`* до и после удаления выбросов:
+
+*До удаления выбросов:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggscatter(df, x = "BodyFat", y = "Height", 
+          xlab = "BodyFat", ylab = "Height")
+```
+
+*Определим выбросы:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+int <- boxplot.stats(df$BodyFat)$out
+ind <- boxplot.stats(df$Height)$out
+int
+ind
+```
+
+*Определим номера строк для выбросных значений:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+which(df$BodyFat == "47.5", arr.ind = TRUE)
+which(df$Height == "29.5", arr.ind = TRUE)
+```
+
+*Удалим выбросы и построим новое облако корреляции двух переменных БЕЗ выбросов:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+df3 <- data.frame(df$BodyFat, df$Height)
+df3_new <- df3[-c(42, 216),]
+ggscatter(df3_new, x = "df.BodyFat", y = "df.Height", 
+          xlab = "BodyFat", ylab = "Height")
+```
+
+Заметим, что вид графика изменился лишь из-за изменения масштаба рисунка. Само удаление выбросов не сильно повлияло на облако корреляции.
+
+**5.2. Построение и интерпретация матрицы парных коэффициентов корреляции ДО и ПОСЛЕ удаления аномальных наблюдений**
+
+*Матрица парных коэффициентов корреляции до удаления выбросов:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+cor_m1 <- cor(df, method = "pearson")
+cor_m1
+kbl(caption = "Таблица 2. Корреляционная матрица, метод Пирсона", cor_m1, booktabs = T) %>% 
+ kable_classic(html_font = "Cambria", font_size = 4.5, full_width = F)
+```
+
+*Матрица парных коэффициентов корреляции после удаления выбросов:*
+
+*Определим все выбросы по каждой переменной:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+int <- boxplot.stats(df$BodyFat)$out
+ind <- boxplot.stats(df$Density)$out
+int1 <- boxplot.stats(df$Age)$out
+int2 <- boxplot.stats(df$Weight)$out
+int3 <- boxplot.stats(df$Height)$out
+int4 <- boxplot.stats(df$Neck)$out
+int5 <- boxplot.stats(df$Chest)$out
+int6 <- boxplot.stats(df$Abdomen)$out
+int7 <- boxplot.stats(df$Hip)$out
+int8 <- boxplot.stats(df$Thigh)$out
+int9 <- boxplot.stats(df$Knee)$out
+int10 <- boxplot.stats(df$Ankle)$out
+int11 <- boxplot.stats(df$Biceps)$out
+int12 <- boxplot.stats(df$Forearm)$out
+int13 <- boxplot.stats(df$Wrist)$out
+int
+ind
+int1
+int2
+int3
+int4
+int5
+int6
+int7
+int8
+int9
+int10
+int11
+int12
+int13
+```
+
+*Определим номера строк для всех выбросных значений:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+which(df$BodyFat == "47.5", arr.ind = TRUE)
+
+which(df$Density == "0.995", arr.ind = TRUE)
+
+which(df$Weight == "363.15", arr.ind = TRUE)
+which(df$Weight == "262.75", arr.ind = TRUE)
+
+which(df$Height == "363.15", arr.ind = TRUE)
+
+which(df$Neck == "51.2", arr.ind = TRUE)
+which(df$Neck == "31.5", arr.ind = TRUE)
+which(df$Neck == "31.1", arr.ind = TRUE)
+
+
+which(df$Chest == "136.2", arr.ind = TRUE)
+which(df$Chest == "128.3", arr.ind = TRUE)
+
+which(df$Abdomen == "148.1", arr.ind = TRUE)
+which(df$Abdomen == "126.2", arr.ind = TRUE)
+which(df$Abdomen == "122.1", arr.ind = TRUE)
+
+which(df$Hip == "116.1", arr.ind = TRUE)
+which(df$Hip == "147.7", arr.ind = TRUE)
+which(df$Hip == "125.6", arr.ind = TRUE)
+
+which(df$Thigh == "87.3", arr.ind = TRUE)
+which(df$Thigh == "72.5", arr.ind = TRUE)
+which(df$Thigh == "72.9", arr.ind = TRUE)
+which(df$Thigh == "74.4", arr.ind = TRUE)
+
+
+which(df$Knee == "49.1", arr.ind = TRUE)
+which(df$Knee == "45.0", arr.ind = TRUE)
+which(df$Knee == "46.0", arr.ind = TRUE)
+
+
+which(df$Ankle == "33.9", arr.ind = TRUE)
+which(df$Ankle == "29.6", arr.ind = TRUE)
+which(df$Ankle == "33.7", arr.ind = TRUE)
+
+which(df$Biceps == "45", arr.ind = TRUE)
+
+which(df$Forearm == "23.1", arr.ind = TRUE)
+which(df$Forearm == "34.9", arr.ind = TRUE)
+which(df$Forearm == "21.0", arr.ind = TRUE)
+which(df$Forearm == "23.1", arr.ind = TRUE)
+which(df$Forearm == "22.0", arr.ind = TRUE)
+
+which(df$Wrist == "21.4", arr.ind = TRUE)
+which(df$Wrist == "21.4", arr.ind = TRUE)
+which(df$Wrist == "15.8", arr.ind = TRUE)
+which(df$Wrist == "20.9", arr.ind = TRUE)
+```
+
+*Удалим выбросы и построим новую матрицу парных коэффициентов корреляции БЕЗ выбросов:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+df4 <- df[-c(42, 216, 39, 41, 45, 106, 35, 152, 169, 31, 86, 206, 159,
+             226, 252),]
+
+cor_m1 <- cor(df4, method = "pearson")
+cor_m1
+kbl(caption = "Таблица 3. Корреляционная матрица БЕЗ выбросов, метод Пирсона", cor_m1, booktabs = T) %>% 
+ kable_classic(html_font = "Cambria", font_size = 4.5, full_width = F)
+```
+
+*Сопоставление коэффициентов корреляции до и после удаления выбросов:*
+
+Некоторые коэффициенты корреляции стали меньше или больше после удаления выбросов, что говорит о том, что выбросы все же искажали реальное значение парной корреляции между переменными (например корреляция между `BodyFat` и `Weight` снизилась примерно на 0,612414-0,5994612 = 0,0129528, подобные снижения можно назвать незначительными). Однако стоит заметить, что между некторыми переменными коэффициент корреляции принципиально изменился: между переменными `Height` и `BodyFat` коэффициент до удаления выбросов был отрицательным (-0,0894954), а после удаления выбросов стал положительным (0,0018122). Несмотря на то, что этот коэффициент корреляции крайне незначительный (очень близкий к 0) и скорее говорит нам об отсутсвии связи между переменными `Height` и `BodyFat`, важно то, что он изменил свой знак после удаления выбросов, то есть связь из отрицательной стала положительной. В целом по таблице, значения коэффициентов корреляции после удаления выбросов изменились незначительно.
+
+*Проверка значимости коэффициентов корреляции:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+res <- cor.mtest(df, conf.level = 0.95)
+corrplot(cor(df), p.mat = res$p, sig.level = 0.05, tl.col = "black", tl.srt = 45, tl.cex = 0.5)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+corrplot(cor(df), p.mat = res$p, insig = "label_sig", pch.col = "black", pch = "p<.05", pch.cex = 0.4, tl.col = "black", tl.srt = 45, tl.cex = 0.5) 
+```
+
+*Выводы о взаимосвязи между признаками:*
+
+Таким образом, можно сказать, что с рассматриваемой переменной `BodyFat` большинство признаков имеют сильную прямую взаимосвязь: такие переменные как `Weight`, `Chest`, `Abdomen` и `Hip` (это значит, что размер груди, живота, бедра и веса имеют сильную прямую взаимосвязь с процентом жировой ткани в организме), признак Density же имеет сильную обратную(единственную обратную взаимосвязь после удаления выбросов) взаимосвязь с рассматриваемой переменной `BodyFat`, что говорит о том, что плотность тела имеет практически абсолютную обратную зависимость от процента жировой ткани в организме (что логично, так как жировая ткань имеет меньшую плотность, чем мышечная ткань в организме). Некоторые другие перменные также имеют прямую взаимосвязь с переменной `BodyFat`: `Age` (слабую), `Neck` (умеренную), `Thigh` (умеренную), `Knee` (умеренную), `Ankle` (слабую), `Biceps` (умеренную), `Forearm` (слабую), `Wrist` (слабую).
+
+**5.3. Построение доверительных интервалов для значимых коэффициентов корреляции**
+
+По графику, показывающему значимость парных коэффицентов корреляции, можем просто определить значимые коэффициенты в столбце `BodyFat`.
+
+Доверительный интервал для переменных `Density` и `BodyFat`:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+cor_m2 <- cor.test(df$BodyFat, df$Density, method = "pearson") # тест + интервальная оценка
+pander(cor.test(df$BodyFat, df$Density, method = "pearson"))  
+cor_m2
+```
+
+Доверительный интервал для переменных `Weight` и `BodyFat`:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+cor_m2 <- cor.test(df$BodyFat, df$Weight, method = "pearson") # тест + интервальная оценка
+pander(cor.test(df$BodyFat, df$Weight, method = "pearson"))  
+cor_m2
+```
+
+Доверительный интервал для переменных `Chest` и `BodyFat`:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+cor_m2 <- cor.test(df$BodyFat, df$Chest, method = "pearson") # тест + интервальная оценка
+pander(cor.test(df$BodyFat, df$Chest, method = "pearson"))  
+cor_m2
+```
+
+Доверительный интервал для переменных `Abdomen` и `BodyFat`:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+cor_m2 <- cor.test(df$BodyFat, df$Abdomen, method = "pearson") # тест + интервальная оценка
+pander(cor.test(df$BodyFat, df$Abdomen, method = "pearson"))  
+cor_m2
+```
+
+Доверительный интервал для переменных `Hip` и `BodyFat`:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+cor_m2 <- cor.test(df$BodyFat, df$Hip, method = "pearson") # тест + интервальная оценка
+pander(cor.test(df$BodyFat, df$Hip, method = "pearson"))  
+cor_m2
+```
+
+4.  Построение и интерпретация матрицы частных коэффициентов корреляции, построение доверительных интервалов, проверка значимости коэффициентов корреляции
+
+Частные коэффициенты корреляции ДО удаления выбросов:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+cor_p1 <- pcor(scale(df))
+colnames(cor_p1$estimate) <- names(df)
+rownames(cor_p1$estimate) <- names(df)
+cor_p1$estimate[, 1:6]
+kbl(caption = "Таблица 3.1. Матрица частных коэффициентов корреляции ДО удаления выбросов", cor_p1$estimate, booktabs = T) %>% 
+  kable_classic(html_font = "Cambria", font_size = 4.5, full_width = F)
+```
+
+Частные коэффициенты корреляции ПОСЛЕ удаления выбросов:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+cor_p2 <- pcor(scale(df4))
+colnames(cor_p2$estimate) <- names(df4)
+rownames(cor_p2$estimate) <- names(df4)
+cor_p2$estimate[, 1:6]
+kbl(caption = "Таблица 3.2. Матрица частных коэффициентов корреляции ПОСЛЕ удаления выбросов", cor_p2$estimate, booktabs = T) %>% 
+  kable_classic(html_font = "Cambria", font_size = 4.5, full_width = F)
+```
+
+Построение доверительных интервалов для частных коэффициентов корреляции ДО удаления выбросов:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+cor.mtest(cor_p1$estimate, conf.level = 0.05)
+```
+
+Практически все доверительные интервалы не включают в себя 0. Это доказывает значимость частных коэффициентов корреляции.
+
+Построение доверительных интервалов для частных коэффициентов корреляции ПОСЛЕ удаления выбросов:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+cor.mtest(cor_p2$estimate, conf.level = 0.05)
+```
+
+Большая часть доверительных интервалов не включает в себя 0. Это доказывает значимость частных коэффициентов корреляции ДО и ПОСЛЕ удаления выбросов.
+
+Оценка значимости частных коэффициентов корреляции ДО удаления выбросов:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+corrplot(cor_p1$estimate, p.mat = res$p, sig.level = 0.05, tl.col = "black", tl.srt = 45, tl.cex = 0.5)
+```
+
+Оценка значимости частных коэффициентов корреляции ПОСЛЕ удаления выбросов:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+corrplot(cor_p2$estimate, p.mat = res$p, sig.level = 0.05, tl.col = "black", tl.srt = 45, tl.cex = 0.5)
+```
+
+Заметим, что графики практически не изменились. Это значит, что выбросы не сильно повлияли на значимость коэффицентов.
+
+**5.5. Сравнение парных и частных коэффициентов корреляции, выводы о характере взаимосвязей**
+
+Нетрудно заметить существенные отличия в количестве значимых коэффицентов корреляции в случае частных и парных коэффицетов. Коэффициенты парной корреляции по модулю значительно больше частных коэффициентов корреляции, что говорит нам о том, что остальные переменные значительно усиливают связь между переменной `BodyFat` и каждой ее парой (например, остальные переменные(показатели размера живота, груди и т.д.) значительно усиливают связь между процентом жира в теле (`BodyFat`) и размером бедра (`Hip`).
+
+**5.6. Расчёт множественного коэффициента корреляции. Проверка его значимости. Выводы**
+
+Расчёт множественного коэффициента корреляции проводим по тем переменным, которые имеют значимый коэффициент парной корреляции с переменной `BodyFat`.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+fit <- lm(BodyFat ~ ., data = df)
+summary(fit)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+Bf.model <- lm(BodyFat ~ ., df)
+cor.test(Bf.model$model$BodyFat, Bf.model$fitted.values)
+```
+
+Получим множественный коэффициент корреляции, равный cor = 0.988993, что говорит нам о том, что процент жира в теле(`BodyFat`) имеет очень тесную линейную корреляционную связь с другими переменными.
+
+Проверка значимости множественного коэффициента корреляции:
+
+Поскольку p-value \< 2.2e-16 имеет достаточно низкое значение, ниже любого разумного уровня значимости (p − value \< α), можно сказать, что гипотеза H0 отвергается и множественный коэффициент корреляции является ЗНАЧИМЫМ.
+
+6.  **Регрессионный анализ. Линейная регрессионная модель**
+
+Перед тем как строить модели стоит проверить данные на мультиколлинеарность.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+res1 <- cor.mtest(df, conf.level = 0.95)
+corrplot(cor(df), p.mat = res1$p, type = "full", method = "circle", tl.col = "black", tl.srt = 45, tl.cex = 0.5)
+```
+
+По графику, мы можем заметить, что многие объясняющие переменные сильно между собой коррелируют. Это может ухудшить наши модели. Также целевая переменная имеет линейную связь во всеми признаками, кроме *роста(height)*.
+
+Также нам нужно удалить все выбросы из колонки *BodyFat*, чтобы модель была более правдоподобной.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+Q1 <- quantile(df$BodyFat, 0.25)
+Q3 <- quantile(df$BodyFat, 0.75)
+IQR <- Q3 - Q1
+
+lower_bound <- Q1 - 1.5 * IQR
+upper_bound <- Q3 + 1.5 * IQR
+
+df5 <- df[df$BodyFat >= lower_bound & df$BodyFat <= upper_bound,]
+```
+
+> **6.2. Построим несколько линейных регрессий и выберим лучший результат из полученных**
+
+Для начало построим линейную регрессию со всеми признаками.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+lm1 <- lm(BodyFat ~ ., df5)
+pander(summary(lm1))
+```
+
+Согласно результатам, большинство переменные незначимы для регрессии (за исключением запястья, предплеья, возраста, живота и шеи), но это противоречит логике, поэтому мы будем пренебрегать этим. А значение скорректированного коэффициента детерминации равно 0.726, что является неплохим результатом.
+
+Также можем использовать **метод включения** для того, чтобы понять каким будет модель, если к каждом регрессору добавить еще один пока значимые не закончутся.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+regfit_fwd <- regsubsets(BodyFat ~ ., df5, intercept = TRUE, method = 'forward')
+
+regfit_fwd_sum <- summary(regfit_fwd)
+regfit_fwd_sum
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+regfit_fwd_sum$adjr2
+```
+
+В нашу регрессию буду входить запястье, возраст, вес, живота, все части бедра, предплечье и бицепсов.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+lm2 <- lm(BodyFat ~ Wrist+Age+Weight+Abdomen+Hip+Biceps+Thigh+Forearm, df5)
+pander(summary(lm2))
+```
+
+Скорректированный коэффицент детерминации чуть-чуть, но уменьшилось, при этом количество параметров тоже уменьшилось.
+
+Также можем построить регрессию с запястьем, предплеьем, возрастом, шея и живот, так как это единственные параметры, которые входе теста оказались **значимым**.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+lm3 <- lm(BodyFat ~ Forearm + Age + Wrist + Neck + Abdomen, df5)
+pander(summary(lm3))
+```
+
+Этот модель по скорректированному коэффициенту детерминации является худщим из всех вышеперечисленных, так как оно упало аж на 0.01.
+
+Чтобы окончательно решить какой модель лучше, нам нужно использовать критерии Акаике и Шварца.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+IC_table <- data.frame(n = c('lm1', 'lm2', 'lm3'),
+                       a = c(AIC(lm1), AIC(lm2), AIC(lm3)),
+                       b = c(BIC(lm1), BIC(lm2), BIC(lm3)))
+kbl(IC_table,
+    caption = "Таблица 4. Информационные критерии Акаике и Шварца (Баесовский инф. критерий)", 
+    booktabs = T, col.names = c("Модель", "Значение AIC", "Значение BIC")) %>% 
+    kable_classic(html_font = "Cambria", font_size = 12, full_width = F)
+```
+
+Наименьшее AIC и BIC имеет модель **lm2**, где признаки были отобраны по **методу включения**. В этой модели скорректированный коэффициент детерминации чуть хуже **lm1**, но при этом имеет гораздо меньше признаков, что способствует эффективности модели. Еще с помощью данного метода мы уменьшаем влияние мультиколинеарности (можно сказать в этой модели она отсутствует).
+
+Теперь нужно доказать, что случайные ошибки подчиняются нормальному закону распределения. Для этого нужно использовать тест Jarque Bera, но перед этим убрав все выбросы.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+resi <- lm2$residuals
+
+Q1 <- quantile(resi, 0.25)
+Q3 <- quantile(resi, 0.75)
+IQR <- Q3 - Q1
+
+upper_bound <- Q3 + 1.5  *  IQR
+lower_bound <- Q1 - 1.5  *  IQR
+
+resi_new <- subset(resi, resi <= upper_bound & resi >= lower_bound)
+
+pander(jarque.bera.test(resi_new))
+```
+
+*P_value* больше 0.05, следовательно гипотеза о подчинении остатков к нормальному закону распределения **не отвергается**.
+
+**6.3. Построение графика наблюдаемых и модельных значений зависимой переменной**
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+df5$pred <- predict(lm2)
+ggplot(df5, aes(x = seq(1, nrow(df5), 1), y = df5$BodyFat)) + 
+  geom_point(color = "orange") + 
+  geom_line(aes(x = seq(1, nrow(df5), 1), y = df5$pred)) +
+  labs(x = "Номер наблюдения", y = "Уровень жира в организме")
+```
+
+Точки на диаграмме имеют большой разброс значений и расположены в хаотичном порядке, то есть не имеют закономерности, значит, присутствует гетероскедастичность.
+
+**6.4. Корректная запись уравнения регрессии и интерпретация всех коэффициентов и характеристик, включая коэффициенты эластичности. Выводы**
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+pander(lm2$coefficients)
+```
+
+$$ y_{BodyFat} = -31.56 - 1.813 \cdot x_{Wrist} + 0.06415 \cdot x_{Age} - 0.1195 \cdot x_{Weight} + 0.2786 \cdot x_{Thigh} + 0.9101 \cdot x_{Abdomen} - 0.1434 \cdot x_{Hip} + 0.406 \cdot x_{Forearm} + 0.1283 \cdot x_{Biceps}$$
+
+Уравнение регрессии имеет $\beta_{0}$ равной -31.56, которые по модулю имеет самое большое значение.
+
+Посчитаем коэфициенты эластичности
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+paste("Эластичность Wrist:", round(( - 1.813*mean(df5$Wrist)/mean(df5$BodyFat)),3),"%")
+paste("Эластичность Age:", round(( 0.06415*mean(df5$Age)/mean(df5$BodyFat)),3),"%")
+paste("Эластичность Weight:", round((-0.1195*mean(df5$Weight)/mean(df5$BodyFat)),3),"%")
+paste("Эластичность Thigh:", round((0.2786*mean(df5$Thigh)/mean(df5$BodyFat)),3),"%")
+paste("Эластичность Abdomen:", round((0.9101*mean(df5$Abdomen)/mean(df5$BodyFat)),3),"%")
+paste("Эластичность Hip:", round((-0.1434*mean(df5$Hip)/mean(df5$BodyFat)),3),"%")
+paste("Эластичность Forearm:", round((0.406*mean(df5$Forearm)/mean(df5$BodyFat)),3),"%")
+paste("Эластичность Biceps:", round((0.1283*mean(df5$Biceps)/mean(df5$BodyFat)),3),"%")
+```
+
+Наибольший по модулю коэффициент эластичности имеет показатель $Abdomen$, а значит, что при фиксированных значениях остальных переменных, уровень жира в теле увеличится на 4,419%, если плотность тела увеличится на 1%.
+
+Наименьший по модулю коэффициент эластичности имеет показатель $Age$, а это значит, что при фиксированных значениях остальных переменных,уровень жира в теле увеличится всего на 0,151%, если возраст увеличится на 1%.
+
+**Регрессионный анализ. Нелинейная (степенная) регрессионная модель**
+
+Для проведения степенного анализа необходимо прологарифмировать данные, однако для избежания ошибок, нужно исключить пустые значения и нули:
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+df6 = apply(df, 1, function(row) all(row != 0 ))
+df6_1 <- df[df6,]
+```
+
+Проверим прологарифмированные данные на мультиколлинеарность, исключив перед этим выбросы.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+df6_22 <- log(df6_1)
+Q1 <- quantile(df6_22$BodyFat, 0.25)
+Q3 <- quantile(df6_22$BodyFat, 0.75)
+IQR <- Q3 - Q1
+
+lower_bound <- Q1 - 1.5 * IQR
+upper_bound <- Q3 + 1.5 * IQR
+
+df6_2 <- df6_22[df6_22$BodyFat >= lower_bound & df6_22$BodyFat <= upper_bound,]
+corrplot(cor(df6_2), p.mat = res$p, type = "full", method = "circle", tl.col = "black", tl.srt = 45, tl.cex = 0.5)
+```
+
+Выводы относительно коллинеарности не сильно поменялись по сравнению в с предыдущим пунктом.
+
+1.1) Рассмотрим степенную модель множественной регрессии со всеми имеющимися объясняющими переменными: $y = \beta_{0}\prod_{j=1}^{m}x_{j}^{\beta_{j}} \varepsilon$
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+lm1_1 <- lm(BodyFat ~ ., df6_2)
+pander(summary(lm1_1))
+```
+
+1.2) Проверим остатки на нормальность распредления:
+
+```{r}
+pander(shapiro.test(lm1_1$residuals))
+pander(jarque.bera.test(lm1_1$residuals))
+```
+Во всех случаях тесты на нормальность распределения остатков отвергаются на уровне значимости 0,05, т.к. $p-value < 0,05$.
+
+1.3) Проверим остатки на гомоскедастичность:
+```{r}
+pander(bptest(lm1_1))
+```
+$p-value<0,05$, значит, гомоскедастичность отсутствует.
+
+*2.1) Рассмотрим модель только со значимыми коэффициентами, то есть с теми, которые имеют **p-value \< 0.05**:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+lm2_1 <- lm(BodyFat ~ Neck + Abdomen + Hip+Wrist, df6_2)
+pander(summary(lm2_1))
+```
+
+**Вывод:** скорректированный коэффициент детерминации (Adjusted R2) уменьшилcя, значит, регрессионная модель ухудшилась.
+
+2.2) Проверим остатки на нормальность распредления:
+
+```{r}
+pander(shapiro.test(lm2_1$residuals))
+pander(jarque.bera.test(lm2_1$residuals))
+```
+Во всех случаях тесты на нормальность распределения остатков отвергаются на уровне значимости 0,05, т.к. $p-value < 0,05$.
+
+2.3) Проверим остатки на гомоскедастичность:
+```{r}
+pander(bptest(lm2_1))
+```
+$p-value<0,05$, значит, гомоскедастичность отсутствует.
+*Используем метод включения для отбора регрессоров:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+regfit_fwd <- regsubsets(df6_2$BodyFat ~ ., df6_2, intercept = TRUE, method = 'forward')
+
+regfit_fwd_sum <- summary(regfit_fwd)
+regfit_fwd_sum
+names(regfit_fwd_sum)
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+regfit_fwd_sum$adjr2
+```
+
+**Вывод:** наибольший коэффициент детерминации у модели с 8 регрессорами =\> выбираем данные переменные в качестве значимых объясняющих для построения регрессионной модели.
+
+*Построение модели с отобранными регрессорами:*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+lm3_1 <- lm(BodyFat ~  Age + Weight + Neck + Abdomen + Hip + Thigh + Forearm + Wrist , df6_2)
+pander(summary(lm3_1))
+```
+
+Скорректированный коэффициент детерминации увеличилась по сравнению. смоделью 4_2, значит, регрессионная модель улучшилась, но немного уменьшилась в сравнении с моделью 4_1. 
+
+3.2) Проверим остатки на нормальность распредления:
+
+```{r}
+pander(shapiro.test(lm3_1$residuals))
+pander(jarque.bera.test(lm3_1$residuals))
+```
+Во всех случаях тесты на нормальность распределения остатков отвергаются на уровне значимости 0,05, т.к. $p-value < 0,05$.
+
+3.3) Проверим остатки на гомоскедастичность:
+```{r}
+pander(bptest(lm3_1))
+```
+$p-value<0,05$, значит, гомоскедастичность отсутствует.
+
+
+
+*P_value* меньше 0.01, следовательно гипотеза о подчинении остатков нормальному закону распределения **отвергается**.
+
+*Интерпретация коэффициентов регрессии:*
+
+$$ y_{BodyFat} = 4.757 \cdot x_{Density}^{25.15}  \cdot x_{age}^{0.04777} \cdot x_{Weight}^{0.2425}   \cdot x_{ Height}^{ 0.1399}  \cdot x_{Hip}^{1.045} \cdot x_{Thigh}^{0.5946} \cdot x_{ Ankle }^{0.2195}$$
+
+Коэффициент регрессии $b_(density)$ показывает, что уровень жира в среднем уменьшится примерно на 25, если переменная плотность увеличится на единицу своего измерения при фиксированных значениях остальных пременных.
+
+Коэффициент регрессии $b(thigh)$ показывает, что уровень жира в среднем увеличится на 0,6, если переменная, бедро увеличится на единицу своего измерения при фиксированных значениях остальных пременных.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+pander(lm3_1$coefficients)
+```
+
+*Теперь посчитаем коэффициент эластичности для модели 'lm3_1':*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+paste("Эластичность Density:", round((-25.15*mean(df6_2$Density)/mean(df6_2$BodyFat)),3),"%")
+paste("Эластичность Age:", round((0.04777*mean(df6_2$Age)/mean(df6_2$BodyFat)),3),"%")
+paste("Эластичность Weight:", round((0.2425*mean(df6_2$Weight)/mean(df6_2$BodyFat)),3),"%")
+paste("Эластичность Height:", round((0.1399*mean(df6_2$Height)/mean(df6_2$BodyFat)),3),"%")
+paste("Эластичность Hip:", round((-1.045*mean(df6_2$Hip)/mean(df6_2$BodyFat)),3),"%")
+paste("Эластичность Thigh:", round((0.5946*mean(df6_2$Thigh)/mean(df6_2$BodyFat)),3),"%")
+paste("Эластичность Ankle:", round((-0.2195*mean(df6_2$Ankle)/mean(df6_2$BodyFat)),3),"%")
+paste("Эластичность Wrist:", round((0.1711*mean(df6_2$Wrist)/mean(df6_2$BodyFat)),3),"%")
+```
+
+Наибольший по модулю коэффициент эластичности имеет показатель $Hip$, а значит, что при фиксированных значениях остальных переменных, уровень жира в теле уменьшится на 1,7%, если размер бедра увеличится на 1%.
+
+Наименьший по модулю коэффициент эластичности имеет показатель $Age$, а это значит, что при фиксированных значениях остальных переменных,уровень жира в теле уменьшится всего на 0,062%, если возраст увеличится на 1%.
+
+*Построение графика предсказанных и фактических значений зависимой переменной для модели 'lm3_1':*
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+df6_2$pred <- predict(lm3_1)
+ggplot(df6_2, aes(x = seq(1, nrow(df6_2), 1), y = df6_2$BodyFat)) + 
+  geom_point(color = "orange") + 
+  geom_line(aes(x = seq(1, nrow(df6_2), 1), y = df6_2$pred)) +
+  labs(x = "Номер наблюдения", y = "Уровень жира в организме")
+```
+
+Мы видим, что разброс значений не такой большой, как в прошлом пункте, так как данные прологарифмированы и графики наблюдаемых и модельных значений зависимой перемнной расходятся в некоторых местах. Но расхождение не велико, значит, модель можно считать качественной.
+
+**Регрессионный анализ. Итог**
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+IC_table <- data.frame(n = c('lm2', 'lm3_1'), 
+                  a = rbind(AIC(lm2), AIC(lm3_1)), 
+                  b = rbind(BIC(lm2), BIC(lm3_1)))
+kbl(IC_table,
+    caption = "Таблица 6. Информационные критерии Акаике и Шварца (Баесовский инф. критерий)", 
+    booktabs = T, col.names = c("Модель", "Значение AIC", "Значение BIC")) %>% 
+    kable_classic(html_font = "Cambria", font_size = 12, full_width = F)
+```
+
+***Вывод:*** значения AIC, BIC у нелинейной модели значительно ниже значений линейной модели =\> использование нелинейной модели lm3_1 целесообразно, так как она будет лучше по всем факторам, чем линейная, что будет приводить к более надежным результатам.
+
+***Итоговая оптимальная регрессионная модель:*** $$ y_{BodyFat} = 4.757 \cdot x_{Density}^{25.15}  \cdot x_{age}^{0.04777} \cdot x_{Weight}^{0.2425}   \cdot x_{ Height}^{ 0.1399}  \cdot x_{Hip}^{1.045} \cdot x_{Thigh}^{0.5946} \cdot x_{ Ankle }^{0.2195}$$
